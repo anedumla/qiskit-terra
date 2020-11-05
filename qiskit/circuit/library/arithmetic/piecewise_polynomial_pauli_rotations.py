@@ -15,7 +15,7 @@
 from typing import List, Optional
 import numpy as np
 
-from qiskit.circuit import QuantumRegister
+from qiskit.circuit import QuantumRegister, AncillaRegister
 from qiskit.circuit.exceptions import CircuitError
 
 from qiskit.circuit.library.arithmetic.functional_pauli_rotations import FunctionalPauliRotations
@@ -37,10 +37,50 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
 
         f(x) = \begin{cases}
             0, x < x_0 \\
-            \sum_{i=0}^{i=d}a_{j,i} x^i, x_j \leq x < x_{j+1}
+            \sum_{i=0}^{i=d}a_{j,i}/2 x^i, x_j \leq x < x_{j+1}
             \end{cases}
 
     where we implicitly assume :math:`x_{J+1} = 2^n`.
+
+    Note:
+        Note the :math:`1/2` factor in the coefficients of :math:`f(x)`, this is consistent with
+        Qiskit's Pauli rotations.
+    Examples:
+        >>> from qiskit import QuantumCircuit
+        >>> from qiskit.circuit.library.arithmetic.piecewise_polynomial_pauli_rotations import\
+        ... PiecewisePolynomialPauliRotations
+        >>> qubits, breakpoints, coeffs = (2, [0, 2], [[0, -1.2],[-1, 1, 3]])
+        >>> poly_r = PiecewisePolynomialPauliRotations(num_state_qubits=qubits,
+        ...breakpoints=breakpoints, coeffs=coeffs)
+        >>>
+        >>> qc = QuantumCircuit(poly_r.num_qubits)
+        >>> qc.h(list(range(qubits)))
+        <qiskit.circuit.instructionset.InstructionSet object at 0x0000027AA5EDC9E8>
+        >>> qc.append(poly_r.to_instruction(), list(range(qc.num_qubits)))
+        <qiskit.circuit.instructionset.InstructionSet object at 0x0000027AFF183C50>
+        >>> qc.draw()
+             ┌───┐┌──────────┐
+        q_0: ┤ H ├┤0         ├
+             ├───┤│          │
+        q_1: ┤ H ├┤1         ├
+             └───┘│          │
+        q_2: ─────┤2         ├
+                  │  pw_poly │
+        q_3: ─────┤3         ├
+                  │          │
+        q_4: ─────┤4         ├
+                  │          │
+        q_5: ─────┤5         ├
+                  └──────────┘
+
+    References:
+        [1]: Haener, T., Roetteler, M., & Svore, K. M. (2018).
+             Optimizing Quantum Circuits for Arithmetic.
+             `arXiv:1805.12445 <http://arxiv.org/abs/1805.12445>`_
+
+        [2]: Carrera Vazquez, A., Hiptmair, R., & Woerner, S. (2020).
+             Enhancing the Quantum Linear Systems Algorithm using Richardson Extrapolation.
+             `arXiv:2009.04484 <http://arxiv.org/abs/2009.04484>`_
     """
 
     def __init__(self,
@@ -53,8 +93,8 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
 
         Args:
             num_state_qubits: The number of qubits representing the state.
-            breakpoints: The breakpoints to define the piecewise-linear function.
-                Defaults to ``[0]``.
+            breakpoints: The breakpoints to define the piecewise-linear function. If the list is
+            given by :math:`[a_1,...,a_n]` then the polynomials will be defined on the
             coeffs: The coefficients of the polynomials for different segments of the
             piecewise-linear function. ``coeffs[j][i]`` is the coefficient of the i-th power of x
             for the j-th polynomial.
@@ -121,6 +161,9 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
         for poly in self._coeffs:
             self._hom_coeffs.append(poly + [0] * (self._degree + 1 - len(poly)))
 
+        if self.num_state_qubits and coeffs:
+            self._reset_registers(self.num_state_qubits)
+
     @property
     def mapped_coeffs(self) -> List[List[float]]:
         """The coefficients mapped to the internal representation, since we only compare
@@ -165,18 +208,6 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
 
         return y
 
-    @property
-    def num_ancilla_qubits(self) -> int:
-        """The number of ancilla qubits.
-
-        Returns:
-            The number of ancilla qubits in the circuit.
-        """
-        num_ancilla_qubits = self.num_state_qubits - 1 + len(self.breakpoints)
-        if self.contains_zero_breakpoint:
-            num_ancilla_qubits -= 1
-        return num_ancilla_qubits + max(1, self._degree - 1)
-
     def _check_configuration(self, raise_on_failure: bool = True) -> bool:
         valid = True
 
@@ -191,7 +222,7 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
                 raise CircuitError('Not enough qubits in the circuit, need at least '
                                    '{}.'.format(self.num_state_qubits + 1))
 
-        if len(self._breakpoints) != len(self.coeffs):
+        if len(self._breakpoints) != len(self.coeffs) + 1:
             valid = False
             if raise_on_failure:
                 raise ValueError('Mismatching number of breakpoints and polynomials.')
@@ -204,13 +235,26 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
             qr_target = QuantumRegister(1)
             self.qregs = [qr_state, qr_target]
 
-            if self.num_ancilla_qubits > 0:
-                qr_ancilla = QuantumRegister(self.num_ancilla_qubits)
-                self.qregs += [qr_ancilla]
+            # Calculate number of ancilla qubits required
+            num_ancillas = num_state_qubits + 1
+            if self.contains_zero_breakpoint:
+                num_ancillas -= 1
+            num_ancillas += max(1, self._degree - 1)
+            if num_ancillas > 0:
+                self._ancillas = []
+                qr_ancilla = AncillaRegister(num_ancillas)
+                self.add_register(qr_ancilla)
         else:
             self.qregs = []
 
     def _build(self):
+        # If the last breakpoint is < N_l, add the identity polynomial
+        if self._breakpoints[-1] < 2 ** self.num_state_qubits:
+            # Add N_l as the last breakpoint since that's what the algorithm expects
+            self.breakpoints = self._breakpoints + [2 ** self._num_state_qubits]
+            self.coeffs = self._coeffs + [[np.arcsin(1)]]
+
+        # The number of ancilla might have changed, so reset registers
         super()._build()
 
         qr_state = self.qubits[:self.num_state_qubits]
@@ -222,7 +266,7 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
         qr_ancilla = self.qubits[self.num_state_qubits + 1 + max(1, self._degree - 1):]
 
         # apply comparators and controlled linear rotations
-        for i, point in enumerate(self.breakpoints):
+        for i, point in enumerate(self.breakpoints[:-1]):
             if i == 0 and self.contains_zero_breakpoint:
                 # apply rotation
                 poly_r = PolynomialPauliRotations(num_state_qubits=self.num_state_qubits,
@@ -231,26 +275,21 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
                 self.append(poly_r.to_gate(), qr_state[:] + qr_target + qr_ancilla_rot[:])
 
             else:
-                if self.contains_zero_breakpoint:
-                    i_compare = i - 1
-                else:
-                    i_compare = i
-
                 # apply Comparator
                 comp = IntegerComparator(num_state_qubits=self.num_state_qubits, value=point)
-                qr_state_full = qr_state[:] + [qr_ancilla[i_compare]]  # add compare qubit
-                qr_remaining_ancilla = qr_ancilla[i_compare + 1:]  # take remaining ancillas
+                qr_state_full = qr_state[:] + [qr_ancilla[0]]  # add compare qubit
+                qr_remaining_ancilla = qr_ancilla[1:]  # take remaining ancillas
 
                 self.append(comp.to_gate(),
-                            qr_state_full[:] + qr_remaining_ancilla[:comp.num_ancilla_qubits])
+                            qr_state_full[:] + qr_remaining_ancilla[:comp.num_ancillas])
 
                 # apply controlled rotation
                 poly_r = PolynomialPauliRotations(num_state_qubits=self.num_state_qubits,
                                                   coeffs=self.mapped_coeffs[i],
                                                   basis=self.basis)
                 self.append(poly_r.to_gate().control(),
-                            [qr_ancilla[i_compare]] + qr_state[:] + qr_target + qr_ancilla_rot[:])
+                            [qr_ancilla[0]] + qr_state[:] + qr_target + qr_ancilla_rot[:])
 
                 # uncompute comparator
                 self.append(comp.to_gate().inverse(),
-                            qr_state_full[:] + qr_remaining_ancilla[:comp.num_ancilla_qubits])
+                            qr_state_full[:] + qr_remaining_ancilla[:comp.num_ancillas])
