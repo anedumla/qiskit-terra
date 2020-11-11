@@ -44,9 +44,10 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
 
     where we implicitly assume :math:`x_{J+1} = 2^n`.
 
-    Note:
+    .. note::
         Note the :math:`1/2` factor in the coefficients of :math:`f(x)`, this is consistent with
         Qiskit's Pauli rotations.
+
     Examples:
         >>> from qiskit import QuantumCircuit
         >>> from qiskit.circuit.library.arithmetic.piecewise_polynomial_pauli_rotations import\
@@ -252,9 +253,9 @@ class PiecewisePolynomialPauliRotations(FunctionalPauliRotations):
             self.qregs = []
 
     def _build(self):
-        # If the last breakpoint is < N_l, add the identity polynomial
+        # If the last breakpoint is < 2 ^ num_state_qubits, add the identity polynomial
         if self._breakpoints[-1] < 2 ** self.num_state_qubits:
-            # Add N_l as the last breakpoint since that's what the algorithm expects
+            # Add 2 ^ num_state_qubits as the last breakpoint since that's what the algorithm expects
             self.breakpoints = self._breakpoints + [2 ** self._num_state_qubits]
             self.coeffs = self._coeffs + [[np.arcsin(1)]]
 
