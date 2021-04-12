@@ -224,7 +224,6 @@ class PiecewiseChebyshev(BlueprintCircuit):
 
         num_intervals = len(breakpoints)
 
-
         # Calculate the polynomials
         polynomials = []
         for i in range(0, num_intervals - 1):
