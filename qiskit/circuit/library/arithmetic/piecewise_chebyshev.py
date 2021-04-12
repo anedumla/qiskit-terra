@@ -173,16 +173,18 @@ class PiecewiseChebyshev(BlueprintCircuit):
                     The breakpoints for the piecewise approximation.
         """
         breakpoints = self._breakpoints
-        n_l = 2 ** self.num_state_qubits
 
-        # If the last breakpoint is < n_l, add the identity polynomial
-        if self._breakpoints[-1] < n_l:
-            # Add n_l as the last breakpoint since that's what the algorithm expects
-            breakpoints = self._breakpoints + [n_l]
+        if self.num_state_qubits is not None and self._breakpoints is not None:
+            n_l = 2 ** self.num_state_qubits
 
-        # If the first breakpoint is > 1, add the identity polynomial
-        if self._breakpoints[0] > 0:
-            breakpoints = [0] + self._breakpoints
+            # If the last breakpoint is < n_l, add the identity polynomial
+            if self._breakpoints[-1] < n_l:
+                # Add n_l as the last breakpoint since that's what the algorithm expects
+                breakpoints = self._breakpoints + [n_l]
+
+            # If the first breakpoint is > 1, add the identity polynomial
+            if self._breakpoints[0] > 0:
+                breakpoints = [0] + self._breakpoints
 
         return breakpoints
 
@@ -215,7 +217,7 @@ class PiecewiseChebyshev(BlueprintCircuit):
         n_l = 2 ** self.num_state_qubits
 
         # Add n_l as a
-        num_intervals = len(self._breakpoints)
+        num_intervals = len(self.breakpoints)
 
         # Calculate the polynomials
         polynomials = []
@@ -287,7 +289,7 @@ class PiecewiseChebyshev(BlueprintCircuit):
 
     def _reset_registers(self, num_state_qubits: Optional[int]) -> None:
         if num_state_qubits is not None:
-            qr_state = QuantumRegister(num_state_qubits)
+            qr_state = QuantumRegister(num_state_qubits, 'qr')
             qr_target = QuantumRegister(1)
             self.qregs = [qr_state, qr_target]
             self._ancillas = []
